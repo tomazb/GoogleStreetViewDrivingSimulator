@@ -2,6 +2,6 @@
 
 __version__ = "2.0.0"
 
-from streetview_simulator import api, calculations
+from streetview_simulator import api, calculations, models
 
-__all__ = ["api", "calculations"]
+__all__ = ["api", "calculations", "models"]
