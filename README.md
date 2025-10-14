@@ -1,5 +1,10 @@
 # Google Street View Driving Simulator
 
+[![CI](https://github.com/tomazb/GoogleStreetViewDrivingSimulator/workflows/CI/badge.svg)](https://github.com/tomazb/GoogleStreetViewDrivingSimulator/actions)
+[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+
 Generate a time-lapse video of a Google Street View drive between two locations, with optional focus on a specific landmark. The simulator now supports both interactive prompts and a command-line interface, handles resource cleanup automatically, and produces MP4 output by default.
 
 ## Requirements
