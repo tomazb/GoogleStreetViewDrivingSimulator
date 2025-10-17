@@ -205,3 +205,101 @@ class TestCalculatePitch:
         pitch = float(calculate_pitch(center, current, height))
         # Pitch should be between 0 and 90 degrees
         assert 0 <= pitch <= 90, f"Pitch {pitch} out of reasonable range"
+
+
+class TestCalculationIntegration:
+    """Test suite for integration between calculation functions."""
+
+    def test_bearing_and_pitch_together(self):
+        """Test bearing and pitch calculations work together."""
+        center = (40.7128, -74.0060)
+        current = (40.7100, -74.0100)
+        height = 0.3
+        
+        # Calculate bearing from current to next point
+        next_point = (40.7150, -74.0050)
+        bearing = calculate_initial_compass_bearing(current, next_point)
+        
+        # Calculate pitch for object at center
+        pitch = calculate_pitch(center, current, height)
+        
+        # Both should be valid values
+        assert 0 <= bearing <= 360
+        assert pitch is not None
+        assert float(pitch) >= 0
+
+    def test_distance_calculation_with_bearing(self):
+        """Test distance calculation with bearing for route planning."""
+        points = [
+            (40.7128, -74.0060),  # Start
+            (40.7138, -74.0050),  # Point 1
+            (40.7148, -74.0040),  # Point 2
+        ]
+        
+        # Calculate distances between consecutive points
+        distances = []
+        bearings = []
+        
+        for i in range(len(points) - 1):
+            dist = calculate_distance(points[i], points[i + 1])
+            bear = calculate_initial_compass_bearing(points[i], points[i + 1])
+            distances.append(dist)
+            bearings.append(bear)
+        
+        # All distances should be positive
+        assert all(d > 0 for d in distances)
+        
+        # All bearings should be valid
+        assert all(0 <= b <= 360 for b in bearings)
+        
+        # Total distance should be sum of individual distances
+        total_distance = sum(distances)
+        direct_distance = calculate_distance(points[0], points[-1])
+        
+        # Total distance should be greater than or equal to direct distance
+        assert total_distance >= direct_distance
+
+    def test_pitch_calculation_edge_cases(self):
+        """Test pitch calculation with various edge cases."""
+        center = (40.7128, -74.0060)
+        
+        # Test with very close coordinates
+        close = (40.7128, -74.0061)  # Very close
+        pitch = calculate_pitch(center, close, 0.1)
+        assert float(pitch) >= 0
+        
+        # Test with very tall object
+        tall = (40.7100, -74.0100)  # Far away
+        pitch = calculate_pitch(center, tall, 1.0)  # 1km tall
+        assert float(pitch) >= 0
+        
+        # Test with very short object
+        short = (40.7100, -74.0100)  # Far away
+        pitch = calculate_pitch(center, short, 0.001)  # 1m tall
+        assert float(pitch) >= 0
+
+    def test_bearing_calculation_with_cardinal_directions(self):
+        """Test bearing calculation with known cardinal directions."""
+        # Test north
+        start = (40.0, -74.0)
+        end = (41.0, -74.0)  # Directly north
+        bearing = calculate_initial_compass_bearing(start, end)
+        assert 359 <= bearing <= 360 or 0 <= bearing <= 1  # Allow for floating point
+        
+        # Test east
+        start = (40.0, -74.0)
+        end = (40.0, -73.0)  # Directly east
+        bearing = calculate_initial_compass_bearing(start, end)
+        assert 89 <= bearing <= 91
+        
+        # Test south
+        start = (41.0, -74.0)
+        end = (40.0, -74.0)  # Directly south
+        bearing = calculate_initial_compass_bearing(start, end)
+        assert 179 <= bearing <= 181
+        
+        # Test west
+        start = (40.0, -73.0)
+        end = (40.0, -74.0)  # Directly west
+        bearing = calculate_initial_compass_bearing(start, end)
+        assert 269 <= bearing <= 271

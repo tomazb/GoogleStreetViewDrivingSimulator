@@ -8,11 +8,18 @@ from streetview_simulator.api import (
     _coerce_bool,
     _coerce_coordinate,
     _coerce_float,
+    _download_single_image,
+    _ensure_extension,
     _normalise_size,
     _resolve_api_key,
     build_coords,
+    construct_video,
+    download_streetview_images,
     fetch_route_coordinates,
+    generate_drive_video,
     get_heading,
+    make_video,
+    save_location,
     unique,
 )
 
@@ -345,3 +352,508 @@ class TestFetchRouteCoordinates:
 
         with pytest.raises(RuntimeError, match="No route found"):
             fetch_route_coordinates("Invalid", "Location", api_key=mock_api_key)
+
+
+@pytest.mark.unit
+class TestDownloadStreetViewImages:
+    """Test suite for downloading Street View images."""
+
+    @patch("streetview_simulator.api._download_single_image")
+    @patch("streetview_simulator.api.tempfile.TemporaryDirectory")
+    @patch("streetview_simulator.api.concurrent.futures.ThreadPoolExecutor")
+    def test_successful_download(self, mock_executor, mock_temp_dir, mock_download, sample_coordinates):
+        """Test successful image download."""
+        # Setup mocks
+        mock_temp_dir.return_value.__enter__.return_value = "/tmp/test"
+        mock_download.return_value = (0, "/tmp/test/000000.jpg")
+        
+        mock_future = Mock()
+        mock_future.result.return_value = (0, "/tmp/test/000000.jpg")
+        mock_executor.return_value.__enter__.return_value.submit.return_value = mock_future
+
+        with download_streetview_images(sample_coordinates, api_key="test_key") as images:
+            assert len(images) == len(sample_coordinates)
+            assert all(path.endswith(".jpg") for path in images)
+
+    def test_empty_coordinates(self):
+        """Test that empty coordinates raises ValueError."""
+        with pytest.raises(ValueError, match="No coordinates provided"):
+            with download_streetview_images([], api_key="test_key"):
+                pass
+
+    def test_driveby_without_centercoord(self, sample_coordinates):
+        """Test that driveby=True without centercoord raises ValueError."""
+        with pytest.raises(ValueError, match="centercoord is required when driveby is True"):
+            with download_streetview_images(sample_coordinates, driveby=True, api_key="test_key"):
+                pass
+
+    @patch("streetview_simulator.api._download_single_image")
+    @patch("streetview_simulator.api.tempfile.TemporaryDirectory")
+    @patch("streetview_simulator.api.concurrent.futures.ThreadPoolExecutor")
+    def test_driveby_mode(self, mock_executor, mock_temp_dir, mock_download, sample_coordinates):
+        """Test driveby mode with center coordinate."""
+        # Setup mocks
+        mock_temp_dir.return_value.__enter__.return_value = "/tmp/test"
+        mock_download.return_value = (0, "/tmp/test/000000.jpg")
+        
+        mock_future = Mock()
+        mock_future.result.return_value = (0, "/tmp/test/000000.jpg")
+        mock_executor.return_value.__enter__.return_value.submit.return_value = mock_future
+
+        center_coord = (40.7589, -73.9851)
+        with download_streetview_images(
+            sample_coordinates,
+            driveby=True,
+            centercoord=center_coord,
+            height=0.5,
+            api_key="test_key"
+        ) as images:
+            assert len(images) == len(sample_coordinates)
+
+
+@pytest.mark.unit
+class TestMakeVideo:
+    """Test suite for video creation."""
+
+    @patch("cv2.imread")
+    @patch("cv2.VideoWriter")
+    @patch("cv2.VideoWriter_fourcc")
+    def test_successful_video_creation(self, mock_fourcc, mock_writer, mock_imread, temp_output_dir):
+        """Test successful video creation."""
+        # Setup mocks
+        mock_imread.return_value = Mock(shape=(480, 640, 3))
+        mock_writer_instance = Mock()
+        mock_writer.return_value = mock_writer_instance
+        mock_writer_instance.isOpened.return_value = True
+        mock_fourcc.return_value = "mp4v"
+
+        # Create test image paths
+        image_paths = [
+            str(temp_output_dir / "frame1.jpg"),
+            str(temp_output_dir / "frame2.jpg"),
+        ]
+
+        output_path = str(temp_output_dir / "output.mp4")
+        make_video(image_paths, output_path)
+
+        # Verify that writer was called correctly
+        mock_writer.assert_called_once()
+        mock_writer_instance.write.assert_called()
+
+    def test_empty_images(self, temp_output_dir):
+        """Test that empty image list raises ValueError."""
+        output_path = str(temp_output_dir / "output.mp4")
+        with pytest.raises(ValueError, match="No images provided"):
+            make_video([], output_path)
+
+    @patch("cv2.imread")
+    def test_unreadable_first_frame(self, mock_imread, temp_output_dir):
+        """Test handling of unreadable first frame."""
+        mock_imread.return_value = None
+        
+        image_paths = [str(temp_output_dir / "frame1.jpg")]
+        output_path = str(temp_output_dir / "output.mp4")
+        
+        with pytest.raises(RuntimeError, match="Unable to load frame"):
+            make_video(image_paths, output_path)
+
+    @patch("cv2.imread")
+    @patch("cv2.VideoWriter")
+    @patch("cv2.VideoWriter_fourcc")
+    def test_unreadable_subsequent_frame(self, mock_fourcc, mock_writer, mock_imread, temp_output_dir):
+        """Test handling of unreadable subsequent frames."""
+        # First frame loads successfully, subsequent frames fail
+        mock_imread.side_effect = [Mock(shape=(480, 640, 3)), None]
+        
+        mock_writer_instance = Mock()
+        mock_writer.return_value = mock_writer_instance
+        mock_writer_instance.isOpened.return_value = True
+        mock_fourcc.return_value = "mp4v"
+
+        image_paths = [
+            str(temp_output_dir / "frame1.jpg"),
+            str(temp_output_dir / "frame2.jpg"),
+        ]
+        output_path = str(temp_output_dir / "output.mp4")
+        
+        with pytest.raises(RuntimeError, match="Unable to load frame"):
+            make_video(image_paths, output_path)
+
+    @patch("cv2.imread")
+    @patch("cv2.VideoWriter")
+    @patch("cv2.VideoWriter_fourcc")
+    def test_writer_not_opened(self, mock_fourcc, mock_writer, mock_imread, temp_output_dir):
+        """Test handling when video writer cannot be opened."""
+        mock_imread.return_value = Mock(shape=(480, 640, 3))
+        mock_writer_instance = Mock()
+        mock_writer.return_value = mock_writer_instance
+        mock_writer_instance.isOpened.return_value = False
+        mock_fourcc.return_value = "mp4v"
+
+        image_paths = [str(temp_output_dir / "frame1.jpg")]
+        output_path = str(temp_output_dir / "output.mp4")
+        
+        with pytest.raises(RuntimeError, match="Unable to open video writer"):
+            make_video(image_paths, output_path)
+
+
+@pytest.mark.unit
+class TestGenerateDriveVideo:
+    """Test suite for generate_drive_video function."""
+
+    @patch("streetview_simulator.api.make_video")
+    @patch("streetview_simulator.api.download_streetview_images")
+    @patch("streetview_simulator.api.fetch_route_coordinates")
+    @patch("requests.Session")
+    def test_successful_generation(self, mock_session_class, mock_fetch, mock_download, mock_video, temp_output_dir):
+        """Test successful video generation."""
+        # Setup mocks
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+        
+        mock_fetch.return_value = [(40.7128, -74.0060), (40.7589, -73.9851)]
+        
+        mock_download.return_value.__enter__.return_value = [
+            str(temp_output_dir / "frame1.jpg"),
+            str(temp_output_dir / "frame2.jpg"),
+        ]
+        
+        output_path = str(temp_output_dir / "output.mp4")
+        result = generate_drive_video(
+            origin="New York",
+            destination="Boston",
+            output_path=output_path,
+            api_key="test_key"
+        )
+        
+        assert result == output_path
+        mock_fetch.assert_called_once()
+        mock_download.assert_called_once()
+        mock_video.assert_called_once()
+
+    @patch("requests.Session")
+    def test_driveby_mode(self, mock_session_class, temp_output_dir):
+        """Test generate_drive_video in driveby mode."""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+        
+        output_path = str(temp_output_dir / "output.mp4")
+        
+        with patch("streetview_simulator.api.fetch_route_coordinates") as mock_fetch, \
+             patch("streetview_simulator.api.download_streetview_images") as mock_download, \
+             patch("streetview_simulator.api.make_video") as mock_video:
+            
+            mock_fetch.return_value = [(40.7128, -74.0060), (40.7589, -73.9851)]
+            mock_download.return_value.__enter__.return_value = [
+                str(temp_output_dir / "frame1.jpg"),
+                str(temp_output_dir / "frame2.jpg"),
+            ]
+            
+            generate_drive_video(
+                origin="New York",
+                destination="Boston",
+                output_path=output_path,
+                driveby=True,
+                centercoord=(40.7589, -73.9851),
+                height=0.5,
+                api_key="test_key"
+            )
+            
+            # Verify download was called with driveby parameters
+            mock_download.assert_called_once()
+            call_args = mock_download.call_args
+            assert call_args.kwargs["driveby"] is True
+            assert call_args.kwargs["centercoord"] == (40.7589, -73.9851)
+            assert call_args.kwargs["height"] == 0.5
+
+
+@pytest.mark.unit
+class TestConstructVideo:
+    """Test suite for construct_video function."""
+
+    @patch("streetview_simulator.api.generate_drive_video")
+    def test_non_interactive_mode(self, mock_generate):
+        """Test construct_video in non-interactive mode."""
+        mock_generate.return_value = "/tmp/output.mp4"
+        
+        result = construct_video(
+            origin="New York",
+            destination="Boston",
+            output_path="/tmp/output.mp4",
+            api_key="test_key"
+        )
+        
+        assert result == "/tmp/output.mp4"
+        mock_generate.assert_called_once()
+
+    @patch("streetview_simulator.api.generate_drive_video")
+    @patch("builtins.input")
+    def test_interactive_mode(self, mock_input, mock_generate):
+        """Test construct_video in interactive mode."""
+        # Mock user input
+        mock_input.side_effect = [
+            "New York",  # origin
+            "Boston",    # destination
+            "False",     # driveby
+            "test.mp4"   # filename
+        ]
+        
+        mock_generate.return_value = "/tmp/test.mp4"
+        
+        with patch("streetview_simulator.api.save_location") as mock_save_loc:
+            mock_save_loc.return_value = "/tmp"
+            
+            result = construct_video(api_key="test_key")
+            
+            assert result == "/tmp/test.mp4"
+            mock_generate.assert_called_once()
+
+    @patch("streetview_simulator.api.generate_drive_video")
+    @patch("builtins.input")
+    def test_interactive_driveby_mode(self, mock_input, mock_generate):
+        """Test construct_video in interactive driveby mode."""
+        # Mock user input
+        mock_input.side_effect = [
+            "New York",              # origin
+            "Boston",                # destination
+            "True",                  # driveby
+            "40.7589,-73.9851",      # centercoord
+            "0.5",                   # height
+            "test_driveby.mp4"       # filename
+        ]
+        
+        mock_generate.return_value = "/tmp/test_driveby.mp4"
+        
+        with patch("streetview_simulator.api.save_location") as mock_save_loc:
+            mock_save_loc.return_value = "/tmp"
+            
+            result = construct_video(api_key="test_key")
+            
+            assert result == "/tmp/test_driveby.mp4"
+            
+            # Verify generate was called with driveby parameters
+            call_args = mock_generate.call_args[1]
+            assert call_args["driveby"] is True
+            assert call_args["centercoord"] == (40.7589, -73.9851)
+            assert call_args["height"] == 0.5
+
+    @patch("streetview_simulator.api.generate_drive_video")
+    @patch("builtins.input")
+    def test_output_path_with_extension(self, mock_input, mock_generate):
+        """Test that output path extension is handled correctly."""
+        mock_generate.return_value = "/tmp/test.mp4"
+        
+        result = construct_video(
+            origin="New York",
+            destination="Boston",
+            output_path="/tmp/test",  # No extension
+            api_key="test_key"
+        )
+        
+        assert result == "/tmp/test.mp4"
+        
+        # Verify generate was called with correct path
+        call_args = mock_generate.call_args[1]
+        assert call_args["output_path"] == "/tmp/test.mp4"
+
+
+@pytest.mark.unit
+class TestSaveLocation:
+    """Test suite for save_location function."""
+
+    @patch("builtins.input")
+    @patch("os.path.isdir")
+    def test_existing_directory(self, mock_isdir, mock_input):
+        """Test returning an existing directory."""
+        mock_input.return_value = "/existing/path"
+        mock_isdir.return_value = True
+        
+        result = save_location()
+        assert result == "/existing/path"
+
+    @patch("builtins.input")
+    @patch("os.path.isdir")
+    @patch("os.makedirs")
+    def test_create_new_directory(self, mock_makedirs, mock_isdir, mock_input):
+        """Test creating a new directory."""
+        mock_input.return_value = "/new/path"
+        mock_isdir.return_value = False
+        
+        result = save_location(create_missing=True)
+        assert result == "/new/path"
+        mock_makedirs.assert_called_once_with("/new/path", exist_ok=True)
+
+    @patch("builtins.input")
+    @patch("os.path.isdir")
+    @patch("os.makedirs")
+    @patch("builtins.print")
+    def test_directory_creation_failure(self, mock_print, mock_makedirs, mock_isdir, mock_input):
+        """Test handling directory creation failure."""
+        mock_input.side_effect = ["/fail/path", "/existing/path"]
+        mock_isdir.side_effect = [False, True]
+        mock_makedirs.side_effect = OSError("Permission denied")
+        
+        result = save_location(create_missing=True)
+        assert result == "/existing/path"
+        mock_print.assert_called_with("Unable to create directory /fail/path: Permission denied")
+
+    @patch("builtins.input")
+    @patch("os.path.isdir")
+    @patch("builtins.print")
+    def test_invalid_path_no_create(self, mock_print, mock_isdir, mock_input):
+        """Test invalid path when not creating directories."""
+        mock_input.side_effect = ["", "/invalid/path", "/existing/path"]
+        mock_isdir.side_effect = [False, False, True]
+        
+        result = save_location(create_missing=False)
+        assert result == "/existing/path"
+        mock_print.assert_any_call("Path must not be empty.")
+        mock_print.assert_any_call("Invalid path: /invalid/path")
+
+    @patch("builtins.input")
+    @patch("os.path.isdir")
+    @patch("builtins.print")
+    def test_empty_path_retry(self, mock_print, mock_isdir, mock_input):
+        """Test retry when empty path is provided."""
+        mock_input.side_effect = ["", "", "/valid/path"]
+        mock_isdir.side_effect = [False, False, True]
+        
+        result = save_location()
+        assert result == "/valid/path"
+        assert mock_print.call_count == 2  # Two empty path warnings
+
+
+@pytest.mark.unit
+class TestEnsureExtension:
+    """Test suite for _ensure_extension function."""
+
+    def test_with_extension(self):
+        """Test filename with existing extension."""
+        result = _ensure_extension("video.mp4", ".avi")
+        assert result == "video.mp4"
+
+    def test_without_extension(self):
+        """Test filename without extension."""
+        result = _ensure_extension("video", ".mp4")
+        assert result == "video.mp4"
+
+    def test_empty_filename(self):
+        """Test empty filename raises ValueError."""
+        with pytest.raises(ValueError, match="File name must not be empty"):
+            _ensure_extension("", ".mp4")
+
+    def test_whitespace_filename(self):
+        """Test whitespace-only filename raises ValueError."""
+        with pytest.raises(ValueError, match="File name must not be empty"):
+            _ensure_extension("   ", ".mp4")
+
+    def test_filename_with_dot(self):
+        """Test filename with dot but no extension."""
+        result = _ensure_extension("video.", ".mp4")
+        assert result == "video..mp4"
+
+    def test_filename_with_spaces(self):
+        """Test filename with spaces."""
+        result = _ensure_extension("  my video  ", ".mp4")
+        assert result == "  my video  .mp4"
+
+
+@pytest.mark.unit
+class TestDownloadSingleImage:
+    """Test suite for _download_single_image function."""
+
+    @patch("time.sleep")
+    @patch("os.path.exists")
+    @patch("os.remove")
+    @patch("builtins.open")
+    @patch("requests.Session.get")
+    def test_successful_download(self, mock_get, mock_open, mock_remove, mock_exists, mock_sleep):
+        """Test successful image download."""
+        # Setup mocks
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "image/jpeg"}
+        mock_response.__enter__.return_value = mock_response
+        mock_response.__exit__.return_value = None
+        mock_response.iter_content.return_value = [b"image_data"]
+        mock_get.return_value = mock_response
+        
+        mock_file = Mock()
+        mock_open.return_value.__enter__.return_value = mock_file
+        mock_open.return_value.__exit__.return_value = None
+        
+        mock_exists.return_value = False
+        
+        session = Mock()
+        params = {"key": "test", "location": "40.7128,-74.0060"}
+        
+        result = _download_single_image(session, params, "/tmp", 0)
+        
+        assert result == (0, "/tmp/000000.jpg")
+        mock_get.assert_called_once()
+        mock_open.assert_called_once_with("/tmp/000000.jpg", "wb")
+        mock_file.write.assert_called_once_with(b"image_data")
+
+    @patch("time.sleep")
+    @patch("os.path.exists")
+    @patch("os.remove")
+    @patch("requests.Session.get")
+    def test_retry_on_failure(self, mock_get, mock_remove, mock_exists, mock_sleep):
+        """Test retry mechanism on download failure."""
+        # Setup mocks for failure then success
+        mock_fail_response = Mock()
+        mock_fail_response.status_code = 500
+        mock_fail_response.headers = {"Content-Type": "text/html"}
+        mock_fail_response.text = "Internal Server Error"
+        mock_fail_response.__enter__.return_value = mock_fail_response
+        mock_fail_response.__exit__.return_value = None
+        
+        mock_success_response = Mock()
+        mock_success_response.status_code = 200
+        mock_success_response.headers = {"Content-Type": "image/jpeg"}
+        mock_success_response.__enter__.return_value = mock_success_response
+        mock_success_response.__exit__.return_value = None
+        mock_success_response.iter_content.return_value = [b"image_data"]
+        
+        mock_get.side_effect = [mock_fail_response, mock_success_response]
+        mock_exists.return_value = False
+        
+        with patch("builtins.open") as mock_open:
+            mock_file = Mock()
+            mock_open.return_value.__enter__.return_value = mock_file
+            mock_open.return_value.__exit__.return_value = None
+            
+            session = Mock()
+            params = {"key": "test", "location": "40.7128,-74.0060"}
+            
+            result = _download_single_image(session, params, "/tmp", 0)
+            
+            assert result == (0, "/tmp/000000.jpg")
+            assert mock_get.call_count == 2
+            mock_sleep.assert_called_once()
+
+    @patch("time.sleep")
+    @patch("os.path.exists")
+    @patch("os.remove")
+    @patch("requests.Session.get")
+    def test_max_retries_exceeded(self, mock_get, mock_remove, mock_exists, mock_sleep):
+        """Test failure after maximum retries."""
+        # Setup mocks for consistent failure
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.text = "Internal Server Error"
+        mock_response.__enter__.return_value = mock_response
+        mock_response.__exit__.return_value = None
+        mock_get.return_value = mock_response
+        
+        mock_exists.return_value = False
+        
+        session = Mock()
+        params = {"key": "test", "location": "40.7128,-74.0060"}
+        
+        with pytest.raises(RuntimeError, match="Street View API request failed after 4 attempts"):
+            _download_single_image(session, params, "/tmp", 0)
+        
+        assert mock_get.call_count == 4
+        assert mock_sleep.call_count == 3

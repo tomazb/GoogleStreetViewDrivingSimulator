@@ -1,7 +1,18 @@
 import argparse
 import os
+import sys
 
-import StreetViewAPI
+# Try to import from the new package first, fall back to the old module for backward compatibility
+try:
+    from streetview_simulator import api as StreetViewAPI
+except ImportError:
+    # If the package is not installed, try to use the local module
+    try:
+        import StreetViewAPI
+    except ImportError as e:
+        print("Error: Could not import streetview_simulator package or StreetViewAPI module.")
+        print("Please install the package or ensure the modules are in the correct path.")
+        sys.exit(1)
 
 
 def parse_args() -> argparse.Namespace:
